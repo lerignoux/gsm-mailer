@@ -1,7 +1,5 @@
-import json
 import logging
 import os
-import re
 from django.shortcuts import render
 from django.http import HttpResponse
 
@@ -9,7 +7,7 @@ from .models import Greeting
 from django.views.decorators.csrf import csrf_exempt
 
 import smtplib
-import urlparse
+import urllib
 
 
 log = logging.getLogger("sms_incoming")
@@ -36,8 +34,9 @@ def sms_incoming(request):
     if request.method == "POST":
         log.info("Received incoming SMS")
         log.debug(request.body)
-        log.debug(dir(request.body))
-        parameters = urlparse.parse_qs(request.body)
+        body = request.body.decode('utf-8')
+        parameters = urllib.parse.parse_qs(body)
+        log.debug(parameters)
         query = parse_sms(parameters['Body'][0])
         query['source'] = parameters['From'][0]
         query = format_email(query)
@@ -121,6 +120,6 @@ def send_email(user, pwd, recipients, subject, body, force=True):
         server.login(gmail_user, gmail_pwd)
         server.sendmail(FROM, TO, message)
         server.close()
-        print 'successfully sent the mail'
+        log.debug('successfully sent the mail')
     except:
-        print "failed to send mail"
+        log.debug("failed to send mail")
