@@ -58,7 +58,8 @@ def parse_sms(body):
         't': 'template',
         'ts': 'timestamp',
         'e': 'encoding',
-        'se': 'sender'
+        'se': 'sender',
+        'rid': 'request_id'
     }
 
     query = {}
