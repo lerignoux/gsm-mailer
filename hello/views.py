@@ -56,6 +56,7 @@ def parse_sms(body):
         'h': 'hash',
         'l': 'language',
         't': 'template',
+        'ts': 'timestamp',
         'e': 'encoding',
         'se': 'sender'
     }
@@ -182,7 +183,7 @@ def send_report(report, recipient):
 
     client = TwilioRestClient(account_sid, auth_token)
     message = client.messages.create(
-        body=json.dumps(report),
+        body=json.dumps(report, ensure_ascii=False),
         to=recipient,
         from_=twilio_number
     )
