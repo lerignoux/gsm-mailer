@@ -91,3 +91,6 @@ ENV/
 #Heroku
 staticfiles
 db.sqlite3
+
+#Config:
+gsm-mailer/conf.json
