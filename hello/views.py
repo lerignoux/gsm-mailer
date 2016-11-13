@@ -1,15 +1,20 @@
+from datetime import datetime
 import json
 import logging
 import os
-import re
+import uuid
 from django.shortcuts import render
 from django.http import HttpResponse
+
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
 
 from .models import Greeting
 from django.views.decorators.csrf import csrf_exempt
 
 import smtplib
-import urlparse
+from twilio.rest import TwilioRestClient
+import urllib
 
 
 log = logging.getLogger("sms_incoming")
@@ -35,19 +40,10 @@ def db(request):
 def sms_incoming(request):
     if request.method == "POST":
         log.info("Received incoming SMS")
-        log.debug(request.body)
-        log.debug(dir(request.body))
-        parameters = urlparse.parse_qs(request.body)
-        query = parse_sms(parameters['Body'][0])
-        query['source'] = parameters['From'][0]
-        query = format_email(query)
-
-        password = os.environ['GMAIL_PASSWORD']
-        account = os.environ['GMAIL_ACCOUNT']
-        send_email(
-            account, password,
-            query.get('recipients'),
-            query.get('subject', "No subject"), query.get('message'))
+        body = request.body.decode('utf-8')
+        parameters = urllib.parse.parse_qs(body)
+        query = generate_query(parameters)
+        send_emails(query)
 
     return HttpResponse(status=200)
 
@@ -60,8 +56,10 @@ def parse_sms(body):
         'h': 'hash',
         'l': 'language',
         't': 'template',
+        'ts': 'timestamp',
         'e': 'encoding',
-        'se': 'sender'
+        'se': 'sender',
+        'rid': 'request_id'
     }
 
     query = {}
@@ -89,38 +87,109 @@ def parse_sms(body):
     return query
 
 
+def generate_query(parameters):
+    query = parse_sms(parameters['Body'][0])
+    query['id'] = str(uuid.uuid4())
+    query['source'] = parameters['From'][0]
+    query = format_email(query)
+    return query
+
+
 def format_email(query):
     query['subject'] = "'{}' received from {}".format(query.get('subject', 'Mail'), query.get('sender', query.get('source')))
     return query
 
 
-def send_email(user, pwd, recipients, subject, body, force=True):
+def send_emails(query):
+    for recipient in query['recipients']:
+        unit_query = query
+        unit_query['recipients'] = [recipient]
+        log.debug("Scheduling email to %s: '%s'", recipient, unit_query)
+        process_sending(unit_query)
 
+
+def process_sending(query):
+    log.debug('Sending email')
+    account = os.environ['GMAIL_ACCOUNT']
+    password = os.environ['GMAIL_PASSWORD']
+
+    subject = query.get('subject', "No subject")
+    report = {
+        'subject': subject,
+        'id': query['id'],
+        'timestamp': datetime.now().isoformat(),
+        'recipients': query['recipients']
+    }
+    if 'request_id' in query:
+        report['request_id'] = query['request_id']
+    try:
+        send_email(account, password, query['recipients'], subject, query.get('message'), query['source'])
+    except Exception as e:
+        log.exception(e)
+        log.warning("Failed to send email: %s", e)
+        report['status'] = 'failure'
+        report['message'] = str(e)
+    else:
+        report['status'] = 'success'
+    send_report(report, query['source'])
+
+
+def build_email(subject, body, source, template="default"):
+    with open("templates/{}.html".format(template), 'r') as tpl:
+        html = tpl.read()
+        return html.format(subject=subject, body=body, source=source)
+
+
+def send_email(user, pwd, recipients, subject, body, source, force=True):
     gmail_user = user
     gmail_pwd = pwd
-    FROM = user
-    TO = recipients if type(recipients) is list else [recipients]
-    SUBJECT = subject
-    TEXT = body
 
-    # Prepare actual message
-    message = """From: %s\nTo: %s\nSubject: %s\n\n%s
-    """ % (FROM, ", ".join(TO), SUBJECT, TEXT)
+    msg = MIMEMultipart("alternative")
+    msg.set_charset("utf-8")
+    msg["Subject"] = subject
+    msg["From"] = user
+    msg["To"] = ', '.join(recipients) if type(recipients) is list else recipients
 
-    log.debug('Sending the following email:')
-    log.debug(message)
+    part1 = MIMEText(body, "plain", "utf-8")
+
+    msg.attach(part1)
+
+    msg.attach(MIMEText(build_email(subject, body, source), "html"))
+
+    log.debug("Sending the following email: '%s'",  msg.as_string())
 
     if not force:
         log.info('Ignoring email sending until authentication is properly set')
-        return
+        raise Exception("Unimplemented yet: authentication not properly set")
 
     try:
         server = smtplib.SMTP("smtp.gmail.com", 587)
         server.ehlo()
         server.starttls()
         server.login(gmail_user, gmail_pwd)
-        server.sendmail(FROM, TO, message)
+        server.sendmail(user, msg["To"], msg.as_string().encode('ascii'))
         server.close()
-        print 'successfully sent the mail'
-    except:
-        print "failed to send mail"
+        log.debug('successfully sent the mail')
+    except Exception as e:
+        log.error("failed to send mail %s", e)
+        raise
+
+
+def send_report(report, recipient):
+    """
+    Send a report to the sender to confirm the mail sending
+    """
+    log.info("message sent to %s", recipient)
+
+    account_sid = os.environ['TWILIO_ACCOUNT_SID']
+    auth_token = os.environ['TWILIO_AUTH_TOKEN']
+    twilio_number = os.environ['TWILIO_PHONE_NUMBER']
+
+    client = TwilioRestClient(account_sid, auth_token)
+    message = client.messages.create(
+        body=json.dumps(report, ensure_ascii=False),
+        to=recipient,
+        from_=twilio_number
+    )
+
+    log.debug("confirmation SMS sent: '%s'", message)
