@@ -123,7 +123,7 @@ def process_sending(query):
     if 'request_id' in query:
         report['request_id'] = query['request_id']
     try:
-        send_email(account, password, query['recipients'], subject, query.get('message'))
+        send_email(account, password, query['recipients'], subject, query.get('message'), query['source'])
     except Exception as e:
         log.exception(e)
         log.warning("Failed to send email: %s", e)
@@ -134,7 +134,13 @@ def process_sending(query):
     send_report(report, query['source'])
 
 
-def send_email(user, pwd, recipients, subject, body, force=True):
+def build_email(subject, body, source, template="default"):
+    with open("templates/{}.html".format(template), 'r') as tpl:
+        html = tpl.read()
+        return html.format(subject=subject, body=body, source=source)
+
+
+def send_email(user, pwd, recipients, subject, body, source, force=True):
     gmail_user = user
     gmail_pwd = pwd
 
@@ -144,14 +150,11 @@ def send_email(user, pwd, recipients, subject, body, force=True):
     msg["From"] = user
     msg["To"] = ', '.join(recipients) if type(recipients) is list else recipients
 
-    # html = message[message.find("html:") + len("html:"):message.find("text:")].strip()
-    # text = message[message.find("text:") + len("text:"):].strip()
-
-    # part1 = MIMEText(html, "html")
     part1 = MIMEText(body, "plain", "utf-8")
 
-    # msg.attach(part1)
     msg.attach(part1)
+
+    msg.attach(MIMEText(build_email(subject, body, source), "html"))
 
     log.debug("Sending the following email: '%s'",  msg.as_string())
 
